@@ -27,9 +27,91 @@
 ## Требования
 
 - Коробочный Битрикс24 с модулем «Диск», PHP 8.1+, расширение `openssl`.
-- Ферма OOS с включённым редактированием.
+- Ферма OOS с включённым редактированием (отдельный Windows Server, не сервер Битрикса — см. ниже).
 - Сеть: OOS обращается к порталу по HTTPS (`https://portal/wopi/files/...`), браузеры сотрудников открывают OOS.
 - OOS доверяет сертификату портала (цепочка до корпоративного CA есть на серверах OOS).
+
+Подробно про OOS — в следующем разделе.
+
+## Требования к Office Online Server
+
+### Где ставить
+
+**На сервер Битрикс24 OOS поставить нельзя.**
+- Коробка обычно работает на Linux (BitrixVM, Bitrix Environment), а OOS — только на Windows Server.
+- Даже если портал на Windows, Microsoft требует для OOS выделенный сервер: без SharePoint, Exchange,
+  SQL Server и без других сайтов IIS. OOS сам занимает порты 80/443 и 809.
+
+Есть два варианта.
+
+| Вариант | Когда подходит | Минусы |
+| --- | --- | --- |
+| **A. Существующая ферма SharePoint** | Ферма уже есть и доступна по сети из портала и браузеров. Достаточно `New-OfficeWebAppsHost -Domain <портал>` | Нагрузка от Битрикса ложится на ферму SharePoint; изменения на ферме затрагивают оба сервиса |
+| **B. Отдельный экземпляр OOS для Битрикса** | Нужно развести сервисы, ферма SharePoint в другом сегменте сети или её нельзя трогать | Ещё одна Windows-машина, свой сертификат, своя установка |
+
+Для варианта B — отдельная виртуальная машина рядом с порталом (та же сеть или DMZ), а не сервер Битрикса.
+
+### Сервер (вариант B)
+
+- **ОС:** Windows Server 2016 или 2019 (64-бит). Поддержку 2022 проверить по документации Microsoft для вашей сборки OOS.
+- **Домен:** сервер должен быть в домене Active Directory — это требование установщика OOS.
+- **Ресурсы:** как для SharePoint Server 2016 — от 4 vCPU, 12–16 ГБ ОЗУ, 80 ГБ диска.
+  Для пилота хватит одного сервера; для большой нагрузки ферма из нескольких серверов за балансировщиком.
+- **На сервере ничего лишнего:** ни SharePoint, ни Exchange, ни SQL, ни других сайтов IIS, ни Office.
+
+### Предварительные компоненты
+
+- Роли и компоненты Windows (PowerShell от администратора, Windows Server 2016/2019):
+
+  ```powershell
+  Install-WindowsFeature Web-Server, Web-Mgmt-Tools, Web-Mgmt-Console, Web-WebServer, Web-Common-Http, `
+    Web-Default-Doc, Web-Static-Content, Web-Performance, Web-Stat-Compression, Web-Dyn-Compression, `
+    Web-Security, Web-Filtering, Web-Windows-Auth, Web-App-Dev, Web-Net-Ext45, Web-Asp-Net45, `
+    Web-ISAPI-Ext, Web-ISAPI-Filter, Web-Includes, NET-Framework-Features, NET-Framework-45-Features, `
+    NET-Framework-45-Core, NET-Framework-45-ASPNET, NET-WCF-HTTP-Activation45, NET-WCF-Pipe-Activation45, `
+    NET-WCF-TCP-Activation45, Server-Media-Foundation, Windows-Identity-Foundation
+  ```
+
+- .NET Framework 4.7.2 или новее.
+- Visual C++ Redistributable 2013 и 2015–2022 (x64).
+- Языковые пакеты OOS для русского интерфейса (ставятся после OOS).
+
+Точный список зависит от версии Windows и сборки OOS — сверить со страницей
+«Plan Office Online Server» / «Deploy Office Online Server» на Microsoft Learn.
+
+### Дистрибутив и лицензии
+
+- Дистрибутив OOS — в Volume Licensing Service Center (VLSC) организации, вместе с последним накопительным обновлением.
+  **Скачать заранее:** после окончания поддержки (31.12.2026) он может пропасть из VLSC.
+- Просмотр документов бесплатен. Для **редактирования** у пользователей должна быть лицензия Office,
+  дающая право на редактирование в OOS (корпоративная Office Professional Plus / Standard или подписка
+  Microsoft 365 с правами on-premises). Если SharePoint уже редактирует через OOS, эти лицензии, скорее всего, есть.
+
+### Сертификат и сеть
+
+- Сертификат для имени OOS (например `oos.company.local`) от корпоративного CA, в хранилище «Локальный компьютер → Личное»,
+  с понятным Friendly Name — он указывается при создании фермы.
+- DNS-имя OOS разрешается и с сервера портала, и с компьютеров сотрудников.
+
+| Откуда → куда | Порт | Зачем |
+| --- | --- | --- |
+| Браузеры сотрудников → OOS | 443 | Окно редактора |
+| Портал → OOS | 443 | Чтение discovery |
+| OOS → портал | 443 | Чтение и сохранение файлов (`/wopi/files/...`) |
+| Серверы OOS ↔ серверы OOS | 809 | Только для фермы из нескольких серверов |
+
+На серверах OOS должен быть корневой сертификат CA, выпустившего сертификат портала.
+
+### Создание фермы (вариант B)
+
+```powershell
+New-OfficeWebAppsFarm -InternalURL "https://oos.company.local" `
+  -CertificateName "OOS" -EditingEnabled
+# ограничить, каким хостам OOS отдаёт редактор
+New-OfficeWebAppsHost -Domain "portal.company.local"
+```
+
+Проверка: `https://oos.company.local/hosting/discovery` открывается в браузере и отдаёт XML.
 
 ## 0. Проверки перед установкой
 
